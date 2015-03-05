@@ -22,3 +22,11 @@ public class Application {
     }
 
 }
+@RestController
+class GreetingController {
+    
+    @RequestMapping("/hello/{name}")
+    String hello(@PathVariable String name) {
+        return "Hello, " + name + "!";
+    }
+}
