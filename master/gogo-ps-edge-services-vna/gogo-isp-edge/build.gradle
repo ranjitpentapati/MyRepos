@@ -1,0 +1,80 @@
+apply plugin: 'java'
+apply plugin: 'eclipse'
+apply plugin: 'eclipse-wtp'
+
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+version = '1.0'
+
+jar {
+    manifest {
+        attributes 'Implementation-Title': 'gogo-isp edge service', 'Implementation-Version': version
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+
+	//aws
+  	compile 'com.amazonaws:aws-java-sdk:1.9.21'
+  	
+  	//jersey for JAX-RS
+  	compile 'org.glassfish.jersey.containers:jersey-container-servlet-core:2.16'
+    compile 'org.glassfish.jersey.media:jersey-media-json-jackson:2.16'
+    compile 'org.glassfish.jersey.media:jersey-media-multipart:2.16'
+  	
+  	// jackson for json..
+    compile 'com.fasterxml.jackson.core:jackson-databind:2.5.1'
+    compile 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.5.1'
+    compile 'com.fasterxml.jackson.core:jackson-core:2.5.1'
+    compile 'com.fasterxml.jackson.core:jackson-annotations:2.5.1'
+    
+	// metrics
+    compile 'com.netflix.servo:servo-core:0.8.3'
+    // we could use yammer's metrics over netflix servo.. 
+    compile 'io.dropwizard.metrics:metrics-core:3.1.0'
+    
+    //logging
+    compile 'ch.qos.logback:logback-classic:1.1.2'
+    compile 'org.slf4j:slf4j-api:1.7.10'
+    
+    //configuration
+    compile 'com.netflix.archaius:archaius-core:0.6.5'
+    
+    //netflix hystrix for monitoring and fault tolerance.
+    compile 'com.netflix.hystrix:hystrix-core:1.4.0-rc.9'
+    compile 'com.netflix.hystrix:hystrix-metrics-event-stream:1.4.0-rc.9'
+    compile 'com.netflix.hystrix:hystrix-codahale-metrics-publisher:1.4.0-rc.9'    
+    compile 'com.netflix.hystrix:hystrix-yammer-metrics-publisher:1.4.0-rc.9'
+    
+    
+    // this should be selective if we are not leveraging tomcat right?
+    compile 'org.eclipse.jetty:jetty-server:9.2.7.v20150116'
+    compile 'org.eclipse.jetty:jetty-servlet:9.2.7.v20150116'
+ 
+}
+
+
+test {
+    systemProperties 'property': 'value'
+}
+
+uploadArchives {
+    repositories {
+       flatDir {
+           dirs 'repos'
+       }
+    }
+}
+
+// run server leverages jetty.
+task(runServer, dependsOn: 'classes', type: JavaExec) {
+    main = 'com.gogoair.platform.app.Main'
+    classpath = sourceSets.main.runtimeClasspath
+    standardInput = System.in
+}
+
+defaultTasks 'runServer'
