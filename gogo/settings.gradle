@@ -1,0 +1,5 @@
+rootProject.name='gogo-isp'
+include 'gogo-isp-edge', \
+'gogo-isp-edge-test'
+
+
