@@ -1,0 +1,296 @@
+/*
+ * Copyright 2013 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.socialsignin.spring.data.dynamodb.repository.query;
+
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+
+import org.socialsignin.spring.data.dynamodb.core.DynamoDBOperations;
+import org.socialsignin.spring.data.dynamodb.query.Query;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
+import org.springframework.data.domain.SliceImpl;
+import org.springframework.data.repository.query.ParameterAccessor;
+import org.springframework.data.repository.query.Parameters;
+import org.springframework.data.repository.query.ParametersParameterAccessor;
+import org.springframework.data.repository.query.RepositoryQuery;
+
+/**
+ * @author Michael Lavelle
+ */
+public abstract class AbstractDynamoDBQuery<T, ID extends Serializable> implements RepositoryQuery {
+
+	protected final DynamoDBOperations dynamoDBOperations;
+	private final DynamoDBQueryMethod<T, ID> method;
+
+	public AbstractDynamoDBQuery(DynamoDBOperations dynamoDBOperations, DynamoDBQueryMethod<T, ID> method) {
+		this.dynamoDBOperations = dynamoDBOperations;
+		this.method = method;
+	}
+	
+
+	protected QueryExecution<T, ID> getExecution() {
+		if (method.isCollectionQuery() && !isSingleEntityResultsRestriction()) {
+			return new CollectionExecution();
+		}
+		else if (method.isSliceQuery() && !isSingleEntityResultsRestriction()) {
+				return new SlicedExecution(method.getParameters());
+		} else if (method.isPageQuery() && !isSingleEntityResultsRestriction()) {
+			return new PagedExecution(method.getParameters());
+		} else if (method.isModifyingQuery()) {
+			throw new UnsupportedOperationException("Modifying queries not yet supported");
+		} else if (isSingleEntityResultsRestriction()) {
+			return new SingleEntityLimitedExecution();
+		}
+		else {
+			return new SingleEntityExecution();
+		}
+	}
+
+	protected abstract Query<T> doCreateQuery(Object[] values);
+	protected abstract Query<Long> doCreateCountQuery(Object[] values,boolean pageQuery);
+	protected abstract boolean isCountQuery();
+	
+	protected abstract Integer getResultsRestrictionIfApplicable();
+	protected abstract boolean isSingleEntityResultsRestriction();
+
+	
+	protected Query<T> doCreateQueryWithPermissions(Object values[]) {
+		Query<T> query = doCreateQuery(values);
+		query.setScanEnabled(method.isScanEnabled());
+		return query;
+	}
+	
+	protected Query<Long> doCreateCountQueryWithPermissions(Object values[],boolean pageQuery) {
+		Query<Long> query = doCreateCountQuery(values,pageQuery);
+		query.setScanCountEnabled(method.isScanCountEnabled());
+		return query;
+	}
+
+	private interface QueryExecution<T, ID extends Serializable> {
+		public Object execute(AbstractDynamoDBQuery<T, ID> query, Object[] values);
+	}
+
+	
+	class CollectionExecution implements QueryExecution<T, ID> {
+
+		
+		
+		@Override
+		public Object execute(AbstractDynamoDBQuery<T, ID> dynamoDBQuery, Object[] values) {
+			Query<T> query = dynamoDBQuery.doCreateQueryWithPermissions(values);
+			if (getResultsRestrictionIfApplicable() != null)
+			{
+				return restrictMaxResultsIfNecessary(query.getResultList().iterator());
+			}
+			else return query.getResultList();
+		}
+
+		private List<T> restrictMaxResultsIfNecessary(Iterator<T> iterator) {
+			int processed = 0;
+			List<T> resultsPage = new ArrayList<T>();
+			while (iterator.hasNext() && processed < getResultsRestrictionIfApplicable()) {
+				resultsPage.add(iterator.next());
+				processed++;
+			}
+			return resultsPage;		
+		}
+
+	}
+
+	/**
+	 * Executes the {@link AbstractStringBasedJpaQuery} to return a
+	 * {@link org.springframework.data.domain.Page} of entities.
+	 */
+	class PagedExecution implements QueryExecution<T, ID> {
+
+		private final Parameters<?, ?> parameters;
+
+		public PagedExecution(Parameters<?, ?> parameters) {
+
+			this.parameters = parameters;
+		}
+
+		private int scanThroughResults(Iterator<T> iterator, int resultsToScan) {
+			int processed = 0;
+			while (iterator.hasNext() && processed < resultsToScan) {
+				iterator.next();
+				processed++;
+			}
+			return processed;
+		}
+
+		private List<T> readPageOfResultsRestrictMaxResultsIfNecessary(Iterator<T> iterator, int pageSize) {
+			int processed = 0;
+			int toProcess = getResultsRestrictionIfApplicable() != null ? Math.min(pageSize,getResultsRestrictionIfApplicable()) : pageSize;
+			List<T> resultsPage = new ArrayList<T>();
+			while (iterator.hasNext() && processed < toProcess) {
+				resultsPage.add(iterator.next());
+				processed++;
+			}
+			return resultsPage;
+		}
+
+		@Override
+		public Object execute(AbstractDynamoDBQuery<T, ID> dynamoDBQuery, Object[] values) {
+
+			ParameterAccessor accessor = new ParametersParameterAccessor(parameters, values);
+			Pageable pageable = accessor.getPageable();
+			Query<T> query = dynamoDBQuery.doCreateQueryWithPermissions(values);
+
+			List<T> results = query.getResultList();
+			return createPage(results, pageable,dynamoDBQuery,values);
+		}
+
+		private Page<T> createPage(List<T> allResults, Pageable pageable,AbstractDynamoDBQuery<T, ID> dynamoDBQuery,Object[] values) {
+
+			
+			Iterator<T> iterator = allResults.iterator();
+			int processedCount = 0;
+			if (pageable.getOffset() > 0) {
+				processedCount = scanThroughResults(iterator, pageable.getOffset());
+				if (processedCount < pageable.getOffset())
+					return new PageImpl<T>(new ArrayList<T>());
+			}
+			List<T> results = readPageOfResultsRestrictMaxResultsIfNecessary(iterator, pageable.getPageSize());
+			
+			
+			Query<Long> countQuery = dynamoDBQuery.doCreateCountQueryWithPermissions(values,true);
+			long count = countQuery.getSingleResult();
+			
+			if (getResultsRestrictionIfApplicable() != null)
+			{
+				count = Math.min(count,getResultsRestrictionIfApplicable());
+			}
+			
+			return new PageImpl<T>(results, pageable, count);
+
+		}
+	}
+	
+	class SlicedExecution implements QueryExecution<T, ID> {
+
+		private final Parameters<?, ?> parameters;
+
+		public SlicedExecution(Parameters<?, ?> parameters) {
+
+			this.parameters = parameters;
+		}
+
+		private int scanThroughResults(Iterator<T> iterator, int resultsToScan) {
+			int processed = 0;
+			while (iterator.hasNext() && processed < resultsToScan) {
+				iterator.next();
+				processed++;
+			}
+			return processed;
+		}
+
+		private List<T> readPageOfResultsRestrictMaxResultsIfNecessary(Iterator<T> iterator, int pageSize) {
+			int processed = 0;
+			int toProcess = getResultsRestrictionIfApplicable() != null ? Math.min(pageSize,getResultsRestrictionIfApplicable()) : pageSize;
+
+			List<T> resultsPage = new ArrayList<T>();
+			while (iterator.hasNext() && processed < toProcess) {
+				resultsPage.add(iterator.next());
+				processed++;
+			}
+			return resultsPage;
+		}
+
+		@Override
+		public Object execute(AbstractDynamoDBQuery<T, ID> dynamoDBQuery, Object[] values) {
+
+			ParameterAccessor accessor = new ParametersParameterAccessor(parameters, values);
+			Pageable pageable = accessor.getPageable();
+			Query<T> query = dynamoDBQuery.doCreateQueryWithPermissions(values);
+			List<T> results = query.getResultList();
+			return createSlice(results, pageable);
+		}
+
+		private Slice<T> createSlice(List<T> allResults, Pageable pageable) {
+
+			Iterator<T> iterator = allResults.iterator();
+			int processedCount = 0;
+			if (pageable.getOffset() > 0) {
+				processedCount = scanThroughResults(iterator, pageable.getOffset());
+				if (processedCount < pageable.getOffset())
+					return new SliceImpl<T>(new ArrayList<T>());
+			}
+			List<T> results = readPageOfResultsRestrictMaxResultsIfNecessary(iterator, pageable.getPageSize());
+			// Scan ahead to retrieve the next page count
+			boolean hasMoreResults = scanThroughResults(iterator, 1) > 0;
+			if (getResultsRestrictionIfApplicable() != null && getResultsRestrictionIfApplicable().intValue() <= results.size()) hasMoreResults = false; 
+			return new SliceImpl<T>(results, pageable, hasMoreResults);
+		}
+	}
+
+	class SingleEntityExecution implements QueryExecution<T, ID> {
+
+		@Override
+		public Object execute(AbstractDynamoDBQuery<T, ID> dynamoDBQuery, Object[] values) {
+			if (isCountQuery())
+			{
+				return dynamoDBQuery.doCreateCountQueryWithPermissions(values,false).getSingleResult();
+			}
+			else
+			{
+				return dynamoDBQuery.doCreateQueryWithPermissions(values).getSingleResult();
+			}
+
+		}
+	}
+	
+	class SingleEntityLimitedExecution implements QueryExecution<T, ID> {
+
+		@Override
+		public Object execute(AbstractDynamoDBQuery<T, ID> dynamoDBQuery, Object[] values) {
+			if (isCountQuery())
+			{
+				return dynamoDBQuery.doCreateCountQueryWithPermissions(values,false).getSingleResult();
+			}
+			else
+			{
+				List<T> resultList =  dynamoDBQuery.doCreateQueryWithPermissions(values).getResultList();
+				return resultList.size() == 0 ? null : resultList.get(0);
+
+			}
+
+		}
+	}
+
+	/*
+	 * (non-Javadoc)
+	 * 
+	 * @see
+	 * org.springframework.data.repository.query.RepositoryQuery#execute(java
+	 * .lang.Object[])
+	 */
+	public Object execute(Object[] parameters) {
+
+		return getExecution().execute(this, parameters);
+	}
+
+	@Override
+	public DynamoDBQueryMethod<T, ID> getQueryMethod() {
+		return this.method;
+	}
+
+}
